@@ -157,6 +157,11 @@ func ResourceConfigForPod(pod *v1.Pod, enforceCPULimits bool, cpuPeriod uint64) 
 	// determine the qos class
 	qosClass := v1qos.GetPodQOS(pod)
 
+	// disable cfs quota for guaranteed pods
+	if qosClass == v1.PodQOSGuaranteed {
+		cpuQuota = int64(-1)
+	}
+
 	// build the result
 	result := &ResourceConfig{}
 	if qosClass == v1.PodQOSGuaranteed {

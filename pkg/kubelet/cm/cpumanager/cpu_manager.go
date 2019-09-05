@@ -36,6 +36,7 @@ import (
 	"k8s.io/kubernetes/pkg/kubelet/config"
 	kubecontainer "k8s.io/kubernetes/pkg/kubelet/container"
 	"k8s.io/kubernetes/pkg/kubelet/status"
+	v1qos "k8s.io/kubernetes/pkg/apis/core/v1/helper/qos"
 )
 
 // ActivePodsFunc is a function that returns a list of pods to reconcile.
@@ -230,6 +231,14 @@ func (m *manager) AddContainer(p *v1.Pod, c *v1.Container, containerID string) e
 	// Get the CPUs assigned to the container during Allocate()
 	// (or fall back to the default CPUSet if none were assigned).
 	cpus := m.state.GetCPUSetOrDefault(string(p.UID), c.Name)
+
+	// Guaranteed PODs should not have CFS quota throttle
+	if m.policy.Name() == string(PolicyStatic) && v1qos.GetPodQOS(p) == v1.PodQOSGuaranteed {
+		err := m.disableContainerCPUQuota(containerID)
+		if err != nil {
+			klog.Errorf("[cpumanager] AddContainer disable CPU Quota error: %v", err)
+		}
+	}
 	m.Unlock()
 
 	if !cpus.IsEmpty() {
@@ -460,5 +469,18 @@ func (m *manager) updateContainerCPUSet(containerID string, cpus cpuset.CPUSet) 
 		containerID,
 		&runtimeapi.LinuxContainerResources{
 			CpusetCpus: cpus.String(),
+		})
+}
+
+func (m *manager) disableContainerCPUQuota(containerID string) error {
+	// Disable CFS CPU quota to avoid performance degradation due to
+	// Linux kernel CFS throttle implementation.
+	// NOTE: 4.18 kernel attempts to solve CFS throttling problem,
+	// but there are reports that it is not completely effective.
+	return m.containerRuntime.UpdateContainerResources(
+		containerID,
+		&runtimeapi.LinuxContainerResources{
+			CpuPeriod:  100000,
+			CpuQuota:   -1,
 		})
 }
