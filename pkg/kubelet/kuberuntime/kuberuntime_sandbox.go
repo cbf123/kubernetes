@@ -31,6 +31,7 @@ import (
 	kubecontainer "k8s.io/kubernetes/pkg/kubelet/container"
 	"k8s.io/kubernetes/pkg/kubelet/types"
 	"k8s.io/kubernetes/pkg/kubelet/util/format"
+	"k8s.io/kubernetes/pkg/kubelet/cm/cpuset"
 )
 
 // createPodSandbox creates a pod sandbox and returns (podSandBoxID, message, error).
@@ -68,6 +69,16 @@ func (m *kubeGenericRuntimeManager) createPodSandbox(pod *v1.Pod, attempt uint32
 		klog.Error(message)
 		return "", message, err
 	}
+
+	// Place the /pause container on cpu 0 so that it does not interfere with
+	// isolcpus or guaranteed pods.
+	cpus := cpuset.NewCPUSet(0)
+	m.runtimeService.UpdateContainerResources(
+		podSandBoxID,
+		&runtimeapi.LinuxContainerResources{
+			CpusetCpus: cpus.String(),
+		},
+	)
 
 	return podSandBoxID, "", nil
 }
