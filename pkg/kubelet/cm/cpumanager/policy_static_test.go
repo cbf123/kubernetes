@@ -747,7 +747,8 @@ func TestStaticPolicyStartWithResvList(t *testing.T) {
 }
 
 func TestStaticPolicyAddWithResvList(t *testing.T) {
-
+	infraPod := makePod("fakePod", "fakeContainer2", "200m", "200m")
+	infraPod.Namespace = "kube-system"
 	testCases := []staticPolicyTestWithResvList{
 		{
 			description:     "GuPodSingleCore, SingleSocketHT, ExpectError",
@@ -788,6 +789,22 @@ func TestStaticPolicyAddWithResvList(t *testing.T) {
 			expErr:          nil,
 			expCPUAlloc:     true,
 			expCSet:         cpuset.NewCPUSet(4, 5),
+		},
+		{
+			description:     "InfraPod, SingleSocketHT, ExpectAllocReserved",
+			topo:            topoSingleSocketHT,
+			numReservedCPUs: 2,
+			reserved:        cpuset.NewCPUSet(0, 1),
+			stAssignments: state.ContainerCPUAssignments{
+				"fakePod": map[string]cpuset.CPUSet{
+					"fakeContainer100": cpuset.NewCPUSet(2, 3, 6, 7),
+				},
+			},
+			stDefaultCPUSet: cpuset.NewCPUSet(4, 5),
+			pod:             infraPod,
+			expErr:          nil,
+			expCPUAlloc:     true,
+			expCSet:         cpuset.NewCPUSet(0, 1),
 		},
 	}
 

@@ -32,6 +32,11 @@ import (
 // PolicyStatic is the name of the static policy
 const PolicyStatic policyName = "static"
 
+// Define namespaces used by platform infrastructure pods
+var infraNamespaces = [...]string{
+	"kube-system", "armada", "cert-manager", "platform-deployment-manager", "portieris", "vault",
+}
+
 // staticPolicy is a CPU manager policy that does not change CPU
 // assignments for exclusively pinned guaranteed containers after the main
 // container process starts.
@@ -205,6 +210,32 @@ func (p *staticPolicy) assignableCPUs(s state.State) cpuset.CPUSet {
 }
 
 func (p *staticPolicy) Allocate(s state.State, pod *v1.Pod, container *v1.Container) error {
+	// Process infra pods before guaranteed pods
+	if isKubeInfra(pod) {
+		// Container belongs in reserved pool.
+		// We don't want to fall through to the p.guaranteedCPUs() clause below so return either nil or error.
+		if _, ok := s.GetCPUSet(string(pod.UID), container.Name); ok {
+				klog.Infof("[cpumanager] static policy: reserved container already present in state, skipping " +
+					"(namespace: %s, pod UID: %s, pod: %s, container: %s)",
+					pod.Namespace, string(pod.UID), pod.Name, container.Name)
+				return nil
+		}
+
+		cpuset := p.reserved
+		if cpuset.IsEmpty() {
+			// If this happens then someone messed up.
+			return fmt.Errorf("[cpumanager] static policy: reserved container unable to allocate cpus " +
+				"(namespace: %s, pod UID: %s, pod: %s, container: %s); cpuset=%v, reserved:%v",
+				pod.Namespace, string(pod.UID), pod.Name, container.Name, cpuset, p.reserved)
+		}
+		s.SetCPUSet(string(pod.UID), container.Name, cpuset)
+		klog.Infof("[cpumanager] static policy: reserved: AddContainer " +
+			"(namespace: %s, pod UID: %s, pod: %s, container: %s); cpuset=%v",
+			pod.Namespace, string(pod.UID), pod.Name, container.Name, cpuset)
+		return nil
+	}
+
+
 	if numCPUs := p.guaranteedCPUs(pod, container); numCPUs != 0 {
 		klog.Infof("[cpumanager] static policy: Allocate (pod: %s, container: %s)", pod.Name, container.Name)
 		// container belongs in an exclusively allocated pool
@@ -298,6 +329,10 @@ func (p *staticPolicy) guaranteedCPUs(pod *v1.Pod, container *v1.Container) int 
 	}
 	cpuQuantity := container.Resources.Requests[v1.ResourceCPU]
 	if cpuQuantity.Value()*1000 != cpuQuantity.MilliValue() {
+		return 0
+	}
+	// Infrastructure pods use reserved CPUs even if they're in the Guaranteed QoS class
+	if isKubeInfra(pod) {
 		return 0
 	}
 	// Safe downcast to do for all systems with < 2.1 billion CPUs.
@@ -416,4 +451,14 @@ func (p *staticPolicy) generateCPUTopologyHints(availableCPUs cpuset.CPUSet, req
 	}
 
 	return hints
+}
+
+// check if a given pod is in a platform infrastructure namespace
+func isKubeInfra(pod *v1.Pod) bool {
+	for _, namespace := range infraNamespaces {
+		if namespace == pod.Namespace {
+			return true
+		}
+	}
+	return false
 }
