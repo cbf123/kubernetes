@@ -207,6 +207,7 @@ func makeMultiContainerPod(initCPUs, appCPUs []struct{ request, limit string }) 
 }
 
 func TestCPUManagerAdd(t *testing.T) {
+	testExcl := false
 	testPolicy, _ := NewStaticPolicy(
 		&topology.CPUTopology{
 			NumCPUs:    4,
@@ -221,7 +222,7 @@ func TestCPUManagerAdd(t *testing.T) {
 		},
 		0,
 		cpuset.NewCPUSet(),
-		topologymanager.NewFakeManager())
+		topologymanager.NewFakeManager(), testExcl)
 	testCases := []struct {
 		description        string
 		updateErr          error
@@ -474,8 +475,9 @@ func TestCPUManagerAddWithInitContainers(t *testing.T) {
 		},
 	}
 
+	testExcl := false
 	for _, testCase := range testCases {
-		policy, _ := NewStaticPolicy(testCase.topo, testCase.numReservedCPUs, cpuset.NewCPUSet(), topologymanager.NewFakeManager())
+		policy, _ := NewStaticPolicy(testCase.topo, testCase.numReservedCPUs, cpuset.NewCPUSet(), topologymanager.NewFakeManager(), testExcl)
 
 		state := &mockState{
 			assignments:   testCase.stAssignments,
@@ -969,6 +971,7 @@ func TestReconcileState(t *testing.T) {
 // above test cases are without kubelet --reserved-cpus cmd option
 // the following tests are with --reserved-cpus configured
 func TestCPUManagerAddWithResvList(t *testing.T) {
+	testExcl := false
 	testPolicy, _ := NewStaticPolicy(
 		&topology.CPUTopology{
 			NumCPUs:    4,
@@ -983,7 +986,9 @@ func TestCPUManagerAddWithResvList(t *testing.T) {
 		},
 		1,
 		cpuset.NewCPUSet(0),
-		topologymanager.NewFakeManager())
+		topologymanager.NewFakeManager(),
+		testExcl,
+	)
 	testCases := []struct {
 		description        string
 		updateErr          error

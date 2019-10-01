@@ -75,6 +75,8 @@ type staticPolicy struct {
 	topology *topology.CPUTopology
 	// set of CPUs that is not available for exclusive assignment
 	reserved cpuset.CPUSet
+	// If true, default CPUSet should exclude reserved CPUs
+	excludeReserved bool
 	// topology manager reference to get container Topology affinity
 	affinity topologymanager.Store
 }
@@ -85,7 +87,7 @@ var _ Policy = &staticPolicy{}
 // NewStaticPolicy returns a CPU manager policy that does not change CPU
 // assignments for exclusively pinned guaranteed containers after the main
 // container process starts.
-func NewStaticPolicy(topology *topology.CPUTopology, numReservedCPUs int, reservedCPUs cpuset.CPUSet, affinity topologymanager.Store) (Policy, error) {
+func NewStaticPolicy(topology *topology.CPUTopology, numReservedCPUs int, reservedCPUs cpuset.CPUSet, affinity topologymanager.Store, excludeReserved bool) (Policy, error) {
 	allCPUs := topology.CPUDetails.CPUs()
 	var reserved cpuset.CPUSet
 	if reservedCPUs.Size() > 0 {
@@ -109,6 +111,7 @@ func NewStaticPolicy(topology *topology.CPUTopology, numReservedCPUs int, reserv
 	return &staticPolicy{
 		topology: topology,
 		reserved: reserved,
+		excludeReserved: excludeReserved,
 		affinity: affinity,
 	}, nil
 }
@@ -136,7 +139,15 @@ func (p *staticPolicy) validateState(s state.State) error {
 		}
 		// state is empty initialize
 		allCPUs := p.topology.CPUDetails.CPUs()
-		s.SetDefaultCPUSet(allCPUs)
+		if p.excludeReserved {
+			// Exclude reserved CPUs from the default CPUSet to keep containers off them
+			// unless explicitly affined.
+			s.SetDefaultCPUSet(allCPUs.Difference(p.reserved))
+		} else {
+			s.SetDefaultCPUSet(allCPUs)
+		}
+		klog.Infof("[cpumanager] static policy: CPUSet: allCPUs:%v, reserved:%v, default:%v\n",
+			allCPUs, p.reserved, s.GetDefaultCPUSet())
 		return nil
 	}
 
@@ -144,9 +155,11 @@ func (p *staticPolicy) validateState(s state.State) error {
 	// 1. Check if the reserved cpuset is not part of default cpuset because:
 	// - kube/system reserved have changed (increased) - may lead to some containers not being able to start
 	// - user tampered with file
-	if !p.reserved.Intersection(tmpDefaultCPUset).Equals(p.reserved) {
-		return fmt.Errorf("not all reserved cpus: \"%s\" are present in defaultCpuSet: \"%s\"",
-			p.reserved.String(), tmpDefaultCPUset.String())
+	if !p.excludeReserved {
+		if !p.reserved.Intersection(tmpDefaultCPUset).Equals(p.reserved) {
+			return fmt.Errorf("not all reserved cpus: \"%s\" are present in defaultCpuSet: \"%s\"",
+				p.reserved.String(), tmpDefaultCPUset.String())
+		}
 	}
 
 	// 2. Check if state for static policy is consistent
@@ -175,6 +188,9 @@ func (p *staticPolicy) validateState(s state.State) error {
 		}
 	}
 	totalKnownCPUs = totalKnownCPUs.UnionAll(tmpCPUSets)
+	if p.excludeReserved {
+		totalKnownCPUs = totalKnownCPUs.Union(p.reserved)
+	}
 	if !totalKnownCPUs.Equals(p.topology.CPUDetails.CPUs()) {
 		return fmt.Errorf("current set of available CPUs \"%s\" doesn't match with CPUs in state \"%s\"",
 			p.topology.CPUDetails.CPUs().String(), totalKnownCPUs.String())
@@ -229,6 +245,9 @@ func (p *staticPolicy) RemoveContainer(s state.State, podUID string, containerNa
 	klog.Infof("[cpumanager] static policy: RemoveContainer (pod: %s, container: %s)", podUID, containerName)
 	if toRelease, ok := s.GetCPUSet(podUID, containerName); ok {
 		s.Delete(podUID, containerName)
+		if p.excludeReserved {
+			toRelease = toRelease.Difference(p.reserved)
+		}
 		// Mutate the shared pool, adding released cpus.
 		s.SetDefaultCPUSet(s.GetDefaultCPUSet().Union(toRelease))
 	}

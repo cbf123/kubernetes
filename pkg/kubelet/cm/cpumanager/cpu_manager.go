@@ -161,7 +161,10 @@ func NewManager(cpuPolicyName string, reconcilePeriod time.Duration, machineInfo
 		// exclusively allocated.
 		reservedCPUsFloat := float64(reservedCPUs.MilliValue()) / 1000
 		numReservedCPUs := int(math.Ceil(reservedCPUsFloat))
-		policy, err = NewStaticPolicy(topo, numReservedCPUs, specificCPUs, affinity)
+		// NOTE: Set excludeReserved unconditionally to exclude reserved CPUs from default cpuset.
+		// This variable is primarily to make testing easier.
+		excludeReserved := true
+		policy, err = NewStaticPolicy(topo, numReservedCPUs, specificCPUs, affinity, excludeReserved)
 		if err != nil {
 			return nil, fmt.Errorf("new static policy error: %v", err)
 		}
