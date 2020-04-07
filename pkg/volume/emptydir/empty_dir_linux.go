@@ -69,7 +69,12 @@ func getPageSize(path string, mounter mount.Interface) (*resource.Quantity, erro
 			// NOTE: Adding suffix 'i' as result should be comparable with a medium size.
 			// pagesize mount option is specified without a suffix,
 			// e.g. pagesize=2M or pagesize=1024M for x86 CPUs
-			pageSize, err := resource.ParseQuantity(strings.TrimPrefix(opt, prefix) + "i")
+                        opt_val := strings.TrimPrefix(opt, prefix)
+                        val := opt_val
+                        if !strings.HasSuffix(opt_val, "i") {
+                                val = opt_val + "i"
+                        }
+			pageSize, err := resource.ParseQuantity(val)
 			if err != nil {
 				return nil, fmt.Errorf("error getting page size from '%s' mount option: %v", opt, err)
 			}
