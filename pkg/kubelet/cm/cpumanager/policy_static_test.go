@@ -27,6 +27,7 @@ import (
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpuset"
 	"k8s.io/kubernetes/pkg/kubelet/cm/topologymanager"
 	"k8s.io/kubernetes/pkg/kubelet/cm/topologymanager/bitmask"
+	"k8s.io/kubernetes/pkg/kubelet/cm/devicemanager"
 )
 
 type staticPolicyTest struct {
@@ -45,8 +46,9 @@ type staticPolicyTest struct {
 }
 
 func TestStaticPolicyName(t *testing.T) {
+	testDM, _ := devicemanager.NewManagerStub()
 	testExcl := false
-	policy, _ := NewStaticPolicy(topoSingleSocketHT, 1, cpuset.NewCPUSet(), topologymanager.NewFakeManager(), testExcl)
+	policy, _ := NewStaticPolicy(topoSingleSocketHT, 1, cpuset.NewCPUSet(), cpuset.NewCPUSet(), topologymanager.NewFakeManager(), testDM, testExcl)
 
 	policyName := policy.Name()
 	if policyName != "static" {
@@ -56,6 +58,7 @@ func TestStaticPolicyName(t *testing.T) {
 }
 
 func TestStaticPolicyStart(t *testing.T) {
+	testDM, _ := devicemanager.NewManagerStub()
 	testCases := []staticPolicyTest{
 		{
 			description: "non-corrupted state",
@@ -131,7 +134,7 @@ func TestStaticPolicyStart(t *testing.T) {
 	}
 	for _, testCase := range testCases {
 		t.Run(testCase.description, func(t *testing.T) {
-			p, _ := NewStaticPolicy(testCase.topo, testCase.numReservedCPUs, cpuset.NewCPUSet(), topologymanager.NewFakeManager(), testCase.excludeReserved)
+			p, _ := NewStaticPolicy(testCase.topo, testCase.numReservedCPUs, cpuset.NewCPUSet(), cpuset.NewCPUSet(), topologymanager.NewFakeManager(), testDM, testCase.excludeReserved)
 			policy := p.(*staticPolicy)
 			st := &mockState{
 				assignments:   testCase.stAssignments,
@@ -179,6 +182,7 @@ func TestStaticPolicyAdd(t *testing.T) {
 	largeTopoSock0CPUSet := largeTopoSock0Builder.Result()
 	largeTopoSock1CPUSet := largeTopoSock1Builder.Result()
 
+	testDM, _ := devicemanager.NewManagerStub()
 	testCases := []staticPolicyTest{
 		{
 			description:     "GuPodSingleCore, SingleSocketHT, ExpectError",
@@ -447,7 +451,7 @@ func TestStaticPolicyAdd(t *testing.T) {
 	}
 
 	for _, testCase := range testCases {
-		policy, _ := NewStaticPolicy(testCase.topo, testCase.numReservedCPUs, cpuset.NewCPUSet(), topologymanager.NewFakeManager(), testCase.excludeReserved)
+		policy, _ := NewStaticPolicy(testCase.topo, testCase.numReservedCPUs, cpuset.NewCPUSet(), cpuset.NewCPUSet(), topologymanager.NewFakeManager(), testDM, testCase.excludeReserved)
 
 		st := &mockState{
 			assignments:   testCase.stAssignments,
@@ -490,6 +494,7 @@ func TestStaticPolicyAdd(t *testing.T) {
 }
 
 func TestStaticPolicyRemove(t *testing.T) {
+	testDM, _ := devicemanager.NewManagerStub()
 	excludeReserved := false
 	testCases := []staticPolicyTest{
 		{
@@ -549,7 +554,7 @@ func TestStaticPolicyRemove(t *testing.T) {
 	}
 
 	for _, testCase := range testCases {
-		policy, _ := NewStaticPolicy(testCase.topo, testCase.numReservedCPUs, cpuset.NewCPUSet(), topologymanager.NewFakeManager(), excludeReserved)
+		policy, _ := NewStaticPolicy(testCase.topo, testCase.numReservedCPUs, cpuset.NewCPUSet(), cpuset.NewCPUSet(), topologymanager.NewFakeManager(), testDM, excludeReserved)
 
 		st := &mockState{
 			assignments:   testCase.stAssignments,
@@ -571,6 +576,7 @@ func TestStaticPolicyRemove(t *testing.T) {
 }
 
 func TestTopologyAwareAllocateCPUs(t *testing.T) {
+	testDM, _ := devicemanager.NewManagerStub()
 	excludeReserved := false
 	testCases := []struct {
 		description     string
@@ -640,7 +646,7 @@ func TestTopologyAwareAllocateCPUs(t *testing.T) {
 		},
 	}
 	for _, tc := range testCases {
-		p, _ := NewStaticPolicy(tc.topo, 0, cpuset.NewCPUSet(), topologymanager.NewFakeManager(), excludeReserved)
+		p, _ := NewStaticPolicy(tc.topo, 0, cpuset.NewCPUSet(), cpuset.NewCPUSet(), topologymanager.NewFakeManager(), testDM, excludeReserved)
 		policy := p.(*staticPolicy)
 		st := &mockState{
 			assignments:   tc.stAssignments,
@@ -673,6 +679,7 @@ type staticPolicyTestWithResvList struct {
 	topo            *topology.CPUTopology
 	numReservedCPUs int
 	reserved        cpuset.CPUSet
+	isolcpus        cpuset.CPUSet
 	stAssignments   state.ContainerCPUAssignments
 	stDefaultCPUSet cpuset.CPUSet
 	pod             *v1.Pod
@@ -713,9 +720,10 @@ func TestStaticPolicyStartWithResvList(t *testing.T) {
 		},
 	}
 	testExcl := false
+	testDM, _ := devicemanager.NewManagerStub()
 	for _, testCase := range testCases {
 		t.Run(testCase.description, func(t *testing.T) {
-			p, err := NewStaticPolicy(testCase.topo, testCase.numReservedCPUs, testCase.reserved, topologymanager.NewFakeManager(), testExcl)
+			p, err := NewStaticPolicy(testCase.topo, testCase.numReservedCPUs, testCase.reserved, cpuset.NewCPUSet(), topologymanager.NewFakeManager(), testDM, testExcl)
 			if !reflect.DeepEqual(err, testCase.expNewErr) {
 				t.Errorf("StaticPolicy Start() error (%v). expected error: %v but got: %v",
 					testCase.description, testCase.expNewErr, err)
@@ -755,6 +763,7 @@ func TestStaticPolicyAddWithResvList(t *testing.T) {
 			topo:            topoSingleSocketHT,
 			numReservedCPUs: 1,
 			reserved:        cpuset.NewCPUSet(0),
+			isolcpus:        cpuset.NewCPUSet(),
 			stAssignments:   state.ContainerCPUAssignments{},
 			stDefaultCPUSet: cpuset.NewCPUSet(1, 2, 3, 4, 5, 6, 7),
 			pod:             makePod("fakePod", "fakeContainer2", "8000m", "8000m"),
@@ -767,6 +776,7 @@ func TestStaticPolicyAddWithResvList(t *testing.T) {
 			topo:            topoSingleSocketHT,
 			numReservedCPUs: 2,
 			reserved:        cpuset.NewCPUSet(0, 1),
+			isolcpus:        cpuset.NewCPUSet(),
 			stAssignments:   state.ContainerCPUAssignments{},
 			stDefaultCPUSet: cpuset.NewCPUSet(2, 3, 4, 5, 6, 7),
 			pod:             makePod("fakePod", "fakeContainer2", "1000m", "1000m"),
@@ -779,6 +789,7 @@ func TestStaticPolicyAddWithResvList(t *testing.T) {
 			topo:            topoSingleSocketHT,
 			numReservedCPUs: 2,
 			reserved:        cpuset.NewCPUSet(0, 1),
+			isolcpus:        cpuset.NewCPUSet(),
 			stAssignments: state.ContainerCPUAssignments{
 				"fakePod": map[string]cpuset.CPUSet{
 					"fakeContainer100": cpuset.NewCPUSet(2, 3, 6, 7),
@@ -795,6 +806,7 @@ func TestStaticPolicyAddWithResvList(t *testing.T) {
 			topo:            topoSingleSocketHT,
 			numReservedCPUs: 2,
 			reserved:        cpuset.NewCPUSet(0, 1),
+			isolcpus:        cpuset.NewCPUSet(),
 			stAssignments: state.ContainerCPUAssignments{
 				"fakePod": map[string]cpuset.CPUSet{
 					"fakeContainer100": cpuset.NewCPUSet(2, 3, 6, 7),
@@ -806,12 +818,30 @@ func TestStaticPolicyAddWithResvList(t *testing.T) {
 			expCPUAlloc:     true,
 			expCSet:         cpuset.NewCPUSet(0, 1),
 		},
+		{
+			description:     "InfraPod, SingleSocketHT, Isolcpus, ExpectAllocReserved",
+			topo:            topoSingleSocketHT,
+			numReservedCPUs: 2,
+			reserved:        cpuset.NewCPUSet(0, 1),
+			isolcpus:        cpuset.NewCPUSet(1),
+			stAssignments: state.ContainerCPUAssignments{
+				"fakePod": map[string]cpuset.CPUSet{
+					"fakeContainer100": cpuset.NewCPUSet(2, 3, 6, 7),
+				},
+			},
+			stDefaultCPUSet: cpuset.NewCPUSet(4, 5),
+			pod:             infraPod,
+			expErr:          nil,
+			expCPUAlloc:     true,
+			expCSet:         cpuset.NewCPUSet(0),
+		},
 	}
 
 	testExcl := true
+	testDM, _ := devicemanager.NewManagerStub()
 	for _, testCase := range testCases {
-		policy, _ := NewStaticPolicy(testCase.topo, testCase.numReservedCPUs, testCase.reserved, topologymanager.NewFakeManager(), testExcl)
-
+		policy, _ := NewStaticPolicy(testCase.topo, testCase.numReservedCPUs, testCase.reserved, testCase.isolcpus, topologymanager.NewFakeManager(), testDM, testExcl)
+			
 		st := &mockState{
 			assignments:   testCase.stAssignments,
 			defaultCPUSet: testCase.stDefaultCPUSet,

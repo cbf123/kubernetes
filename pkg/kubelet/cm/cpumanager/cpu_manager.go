@@ -21,6 +21,8 @@ import (
 	"math"
 	"sync"
 	"time"
+	"strings"
+	"io/ioutil"
 
 	cadvisorapi "github.com/google/cadvisor/info/v1"
 	v1 "k8s.io/api/core/v1"
@@ -34,6 +36,7 @@ import (
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpuset"
 	"k8s.io/kubernetes/pkg/kubelet/cm/topologymanager"
 	"k8s.io/kubernetes/pkg/kubelet/config"
+	"k8s.io/kubernetes/pkg/kubelet/cm/devicemanager"
 	kubecontainer "k8s.io/kubernetes/pkg/kubelet/container"
 	"k8s.io/kubernetes/pkg/kubelet/status"
 	v1qos "k8s.io/kubernetes/pkg/apis/core/v1/helper/qos"
@@ -50,6 +53,25 @@ type policyName string
 
 // cpuManagerStateFileName is the file name where cpu manager stores its state
 const cpuManagerStateFileName = "cpu_manager_state"
+
+// get the system-level isolated CPUs
+func getIsolcpus() cpuset.CPUSet {
+	dat, err := ioutil.ReadFile("/sys/devices/system/cpu/isolated")
+	if err != nil {
+		klog.Errorf("[cpumanager] unable to read sysfs isolcpus subdir")
+		return cpuset.NewCPUSet()
+	}
+
+	// The isolated cpus string ends in a newline
+	cpustring := strings.TrimSuffix(string(dat), "\n")
+	cset, err := cpuset.Parse(cpustring)
+	if err != nil {
+		klog.Errorf("[cpumanager] unable to parse sysfs isolcpus string to cpuset")
+		return cpuset.NewCPUSet()
+	}
+
+	return cset
+}
 
 // Manager interface provides methods for Kubelet to manage pod cpus.
 type Manager interface {
@@ -127,7 +149,7 @@ func (s *sourcesReadyStub) AddSource(source string) {}
 func (s *sourcesReadyStub) AllReady() bool          { return true }
 
 // NewManager creates new cpu manager based on provided policy
-func NewManager(cpuPolicyName string, reconcilePeriod time.Duration, machineInfo *cadvisorapi.MachineInfo, numaNodeInfo topology.NUMANodeInfo, specificCPUs cpuset.CPUSet, nodeAllocatableReservation v1.ResourceList, stateFileDirectory string, affinity topologymanager.Store) (Manager, error) {
+func NewManager(cpuPolicyName string, reconcilePeriod time.Duration, machineInfo *cadvisorapi.MachineInfo, numaNodeInfo topology.NUMANodeInfo, specificCPUs cpuset.CPUSet, nodeAllocatableReservation v1.ResourceList, stateFileDirectory string, affinity topologymanager.Store, deviceManager devicemanager.Manager) (Manager, error) {
 	var topo *topology.CPUTopology
 	var policy Policy
 
@@ -164,7 +186,11 @@ func NewManager(cpuPolicyName string, reconcilePeriod time.Duration, machineInfo
 		// NOTE: Set excludeReserved unconditionally to exclude reserved CPUs from default cpuset.
 		// This variable is primarily to make testing easier.
 		excludeReserved := true
-		policy, err = NewStaticPolicy(topo, numReservedCPUs, specificCPUs, affinity, excludeReserved)
+		// isolCPUs is the set of kernel-isolated CPUs.  They should be a subset of specificCPUs or
+		// of the CPUs that NewStaticPolicy() will pick if numReservedCPUs is set.  It's only in the
+		// argument list here for ease of testing, it's really internal to the policy.
+		isolCPUs := getIsolcpus()
+		policy, err = NewStaticPolicy(topo, numReservedCPUs, specificCPUs, isolCPUs, affinity, deviceManager, excludeReserved)
 		if err != nil {
 			return nil, fmt.Errorf("new static policy error: %v", err)
 		}

@@ -38,6 +38,7 @@ import (
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpumanager/topology"
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpuset"
 	"k8s.io/kubernetes/pkg/kubelet/cm/topologymanager"
+	"k8s.io/kubernetes/pkg/kubelet/cm/devicemanager"
 )
 
 type mockState struct {
@@ -207,6 +208,7 @@ func makeMultiContainerPod(initCPUs, appCPUs []struct{ request, limit string }) 
 }
 
 func TestCPUManagerAdd(t *testing.T) {
+	testDM, _ := devicemanager.NewManagerStub()
 	testExcl := false
 	testPolicy, _ := NewStaticPolicy(
 		&topology.CPUTopology{
@@ -222,7 +224,8 @@ func TestCPUManagerAdd(t *testing.T) {
 		},
 		0,
 		cpuset.NewCPUSet(),
-		topologymanager.NewFakeManager(), testExcl)
+		cpuset.NewCPUSet(),
+		topologymanager.NewFakeManager(), testDM, testExcl)
 	testCases := []struct {
 		description        string
 		updateErr          error
@@ -476,8 +479,9 @@ func TestCPUManagerAddWithInitContainers(t *testing.T) {
 	}
 
 	testExcl := false
+	testDM, _ := devicemanager.NewManagerStub()
 	for _, testCase := range testCases {
-		policy, _ := NewStaticPolicy(testCase.topo, testCase.numReservedCPUs, cpuset.NewCPUSet(), topologymanager.NewFakeManager(), testExcl)
+		policy, _ := NewStaticPolicy(testCase.topo, testCase.numReservedCPUs, cpuset.NewCPUSet(), cpuset.NewCPUSet(), topologymanager.NewFakeManager(), testDM, testExcl)
 
 		state := &mockState{
 			assignments:   testCase.stAssignments,
@@ -617,7 +621,8 @@ func TestCPUManagerGenerate(t *testing.T) {
 			}
 			defer os.RemoveAll(sDir)
 
-			mgr, err := NewManager(testCase.cpuPolicyName, 5*time.Second, machineInfo, nil, cpuset.NewCPUSet(), testCase.nodeAllocatableReservation, sDir, topologymanager.NewFakeManager())
+			testDM, err := devicemanager.NewManagerStub()
+			mgr, err := NewManager(testCase.cpuPolicyName, 5*time.Second, machineInfo, nil, cpuset.NewCPUSet(), testCase.nodeAllocatableReservation, sDir, topologymanager.NewFakeManager(), testDM)
 			if testCase.expectedError != nil {
 				if !strings.Contains(err.Error(), testCase.expectedError.Error()) {
 					t.Errorf("Unexpected error message. Have: %s wants %s", err.Error(), testCase.expectedError.Error())
@@ -972,6 +977,7 @@ func TestReconcileState(t *testing.T) {
 // the following tests are with --reserved-cpus configured
 func TestCPUManagerAddWithResvList(t *testing.T) {
 	testExcl := false
+	testDM, _ := devicemanager.NewManagerStub()
 	testPolicy, _ := NewStaticPolicy(
 		&topology.CPUTopology{
 			NumCPUs:    4,
@@ -986,7 +992,9 @@ func TestCPUManagerAddWithResvList(t *testing.T) {
 		},
 		1,
 		cpuset.NewCPUSet(0),
+		cpuset.NewCPUSet(),
 		topologymanager.NewFakeManager(),
+		testDM,
 		testExcl,
 	)
 	testCases := []struct {

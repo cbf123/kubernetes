@@ -18,6 +18,7 @@ package cpumanager
 
 import (
 	"fmt"
+	"strconv"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog"
@@ -27,6 +28,7 @@ import (
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpuset"
 	"k8s.io/kubernetes/pkg/kubelet/cm/topologymanager"
 	"k8s.io/kubernetes/pkg/kubelet/cm/topologymanager/bitmask"
+	"k8s.io/kubernetes/pkg/kubelet/cm/devicemanager"
 )
 
 // PolicyStatic is the name of the static policy
@@ -80,6 +82,10 @@ type staticPolicy struct {
 	topology *topology.CPUTopology
 	// set of CPUs that is not available for exclusive assignment
 	reserved cpuset.CPUSet
+	// subset of reserved CPUs with isolcpus attribute
+	isolcpus cpuset.CPUSet
+	// parent containerManager, used to get device list
+	deviceManager devicemanager.Manager
 	// If true, default CPUSet should exclude reserved CPUs
 	excludeReserved bool
 	// topology manager reference to get container Topology affinity
@@ -92,7 +98,7 @@ var _ Policy = &staticPolicy{}
 // NewStaticPolicy returns a CPU manager policy that does not change CPU
 // assignments for exclusively pinned guaranteed containers after the main
 // container process starts.
-func NewStaticPolicy(topology *topology.CPUTopology, numReservedCPUs int, reservedCPUs cpuset.CPUSet, affinity topologymanager.Store, excludeReserved bool) (Policy, error) {
+func NewStaticPolicy(topology *topology.CPUTopology, numReservedCPUs int, reservedCPUs cpuset.CPUSet, isolCPUs cpuset.CPUSet, affinity topologymanager.Store, deviceManager devicemanager.Manager, excludeReserved bool) (Policy, error) {
 	allCPUs := topology.CPUDetails.CPUs()
 	var reserved cpuset.CPUSet
 	if reservedCPUs.Size() > 0 {
@@ -113,9 +119,17 @@ func NewStaticPolicy(topology *topology.CPUTopology, numReservedCPUs int, reserv
 
 	klog.Infof("[cpumanager] reserved %d CPUs (\"%s\") not available for exclusive assignment", reserved.Size(), reserved)
 
+	if !isolCPUs.IsSubsetOf(reserved) {
+		klog.Errorf("[cpumanager] isolCPUs %v is not a subset of reserved %v", isolCPUs, reserved)
+		reserved = reserved.Union(isolCPUs)
+		klog.Warningf("[cpumanager] mismatch isolCPUs %v, force reserved %v", isolCPUs, reserved)
+	}
+
 	return &staticPolicy{
 		topology: topology,
 		reserved: reserved,
+		isolcpus: isolCPUs,
+		deviceManager: deviceManager,
 		excludeReserved: excludeReserved,
 		affinity: affinity,
 	}, nil
@@ -151,8 +165,8 @@ func (p *staticPolicy) validateState(s state.State) error {
 		} else {
 			s.SetDefaultCPUSet(allCPUs)
 		}
-		klog.Infof("[cpumanager] static policy: CPUSet: allCPUs:%v, reserved:%v, default:%v\n",
-			allCPUs, p.reserved, s.GetDefaultCPUSet())
+		klog.Infof("[cpumanager] static policy: CPUSet: allCPUs:%v, reserved:%v, isolcpus:%v, default:%v\n",
+			allCPUs, p.reserved, p.isolcpus, s.GetDefaultCPUSet())
 		return nil
 	}
 
@@ -221,12 +235,13 @@ func (p *staticPolicy) Allocate(s state.State, pod *v1.Pod, container *v1.Contai
 				return nil
 		}
 
-		cpuset := p.reserved
+		// TODO: Is the clone actually needed?
+		cpuset := p.reserved.Clone().Difference(p.isolcpus)
 		if cpuset.IsEmpty() {
 			// If this happens then someone messed up.
 			return fmt.Errorf("[cpumanager] static policy: reserved container unable to allocate cpus " +
-				"(namespace: %s, pod UID: %s, pod: %s, container: %s); cpuset=%v, reserved:%v",
-				pod.Namespace, string(pod.UID), pod.Name, container.Name, cpuset, p.reserved)
+				"(namespace: %s, pod UID: %s, pod: %s, container: %s); cpuset=%v, reserved:%v, isolcpus:%v",
+				pod.Namespace, string(pod.UID), pod.Name, container.Name, cpuset, p.reserved, p.isolcpus)
 		}
 		s.SetCPUSet(string(pod.UID), container.Name, cpuset)
 		klog.Infof("[cpumanager] static policy: reserved: AddContainer " +
@@ -267,7 +282,37 @@ func (p *staticPolicy) Allocate(s state.State, pod *v1.Pod, container *v1.Contai
 				}
 			}
 		}
+		klog.Infof("[cpumanager] guaranteed: AddContainer " +
+					"(namespace: %s, pod UID: %s, pod: %s, container: %s); numCPUS=%d, cpuset=%v",
+					pod.Namespace, string(pod.UID), pod.Name, container.Name, numCPUs, cpuset)
+		return nil
 	}
+
+	if isolcpus := p.podIsolCPUs(pod, container); isolcpus.Size() > 0 {
+		// container has requested isolated CPUs
+		if set, ok := s.GetCPUSet(string(pod.UID), container.Name); ok {
+			if set.Equals(isolcpus) {
+				klog.Infof("[cpumanager] isolcpus container already present in state, skipping " +
+							"(namespace: %s, pod UID: %s, pod: %s, container: %s)",
+							pod.Namespace, string(pod.UID), pod.Name, container.Name)
+				return nil
+			} else {
+				klog.Infof("[cpumanager] isolcpus container state has cpus %v, should be %v" +
+							"(namespace: %s, pod UID: %s, pod: %s, container: %s)",
+							isolcpus, set, pod.Namespace, string(pod.UID), pod.Name, container.Name)
+			}
+		}
+		// Note that we do not do anything about init containers here.
+		// It looks like devices are allocated per-pod based on effective requests/limits
+		// and extra devices from initContainers are not freed up when the regular containers start.
+		// TODO: confirm this is still true for 1.18
+		s.SetCPUSet(string(pod.UID), container.Name, isolcpus)
+		klog.Infof("[cpumanager] isolcpus: AddContainer " +
+					"(namespace: %s, pod UID: %s, pod: %s, container: %s); cpuset=%v",
+					pod.Namespace, string(pod.UID), pod.Name, container.Name, isolcpus)
+		return nil
+	}
+
 	// container belongs in the shared pool (nothing to do; use default cpuset)
 	return nil
 }
@@ -461,4 +506,33 @@ func isKubeInfra(pod *v1.Pod) bool {
 		}
 	}
 	return false
+}
+
+// get the isolated CPUs (if any) from the devices associated with a specific container
+func (p *staticPolicy) podIsolCPUs(pod *v1.Pod, container *v1.Container) cpuset.CPUSet {
+	// NOTE: This is required for TestStaticPolicyAdd() since makePod() does
+	// not create UID. We also need a way to properly stub devicemanager.
+	if len(string(pod.UID)) == 0 {
+		return cpuset.NewCPUSet()
+	}
+	devices := p.deviceManager.GetDevices(string(pod.UID), container.Name)
+	for _, dev := range devices {
+		// this resource name needs to match the isolcpus device plugin
+		if dev.ResourceName == "windriver.com/isolcpus" {
+			cpuStrList := dev.DeviceIds
+			if len(cpuStrList) > 0 {
+				cpuSet := cpuset.NewCPUSet()
+				// loop over the list of strings, convert each one to int, add to cpuset
+				for _, cpuStr := range cpuStrList {
+					cpu, err := strconv.Atoi(cpuStr)
+					if err != nil {
+						panic(err)
+					}
+					cpuSet = cpuSet.Union(cpuset.NewCPUSet(cpu))
+				}
+				return cpuSet
+			}
+		}
+	}
+	return cpuset.NewCPUSet()
 }
