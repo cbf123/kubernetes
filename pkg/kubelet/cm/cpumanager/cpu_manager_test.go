@@ -40,6 +40,12 @@ import (
 	"k8s.io/kubernetes/pkg/kubelet/cm/topologymanager"
 )
 
+type mockSourcesReady struct{}
+
+func (s *mockSourcesReady) AddSource(source string) {}
+
+func (s *mockSourcesReady) AllReady() bool          { return false }
+
 type mockState struct {
 	assignments   state.ContainerCPUAssignments
 	defaultCPUSet cpuset.CPUSet
@@ -273,6 +279,8 @@ func TestCPUManagerAdd(t *testing.T) {
 			podStatusProvider: mockPodStatusProvider{},
 		}
 
+		mgr.sourcesReady = &mockSourcesReady{}
+
 		pod := makePod("fakePod", "fakeContainer", "2", "2")
 		container := &pod.Spec.Containers[0]
 		err := mgr.Allocate(pod, container)
@@ -490,6 +498,8 @@ func TestCPUManagerAddWithInitContainers(t *testing.T) {
 			activePods:        func() []*v1.Pod { return nil },
 			podStatusProvider: mockPodStatusProvider{},
 		}
+
+		mgr.sourcesReady = &mockSourcesReady{}
 
 		containers := append(
 			testCase.pod.Spec.InitContainers,
@@ -1024,6 +1034,8 @@ func TestCPUManagerAddWithResvList(t *testing.T) {
 			activePods:        func() []*v1.Pod { return nil },
 			podStatusProvider: mockPodStatusProvider{},
 		}
+
+		mgr.sourcesReady = &mockSourcesReady{}
 
 		pod := makePod("fakePod", "fakeContainer", "2", "2")
 		container := &pod.Spec.Containers[0]

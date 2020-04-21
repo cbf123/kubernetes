@@ -54,19 +54,18 @@ func (i *internalContainerLifecycleImpl) PreStartContainer(pod *v1.Pod, containe
 }
 
 func (i *internalContainerLifecycleImpl) PreStopContainer(containerID string) error {
-	if i.cpuManager != nil {
-		return i.cpuManager.RemoveContainer(containerID)
-	}
+	// We can't safely call i.cpuManager.RemoveContainer(containerID)
+	// here unless it's an init container. Regular containers could be in the
+	// process of restarting, and RemoveContainer() would remove any allocated
+	// exclusive CPUs that the container should have.
 	return nil
 }
 
 func (i *internalContainerLifecycleImpl) PostStopContainer(containerID string) error {
-	if i.cpuManager != nil {
-		err := i.cpuManager.RemoveContainer(containerID)
-		if err != nil {
-			return err
-		}
-	}
+	// We can't safely call i.cpuManager.RemoveContainer(containerID)
+	// here unless it's an init container. Regular containers could be in the
+	// process of restarting, and RemoveContainer() would remove any allocated
+	// exclusive CPUs that the container should have.
 	if utilfeature.DefaultFeatureGate.Enabled(kubefeatures.TopologyManager) {
 		err := i.topologyManager.RemoveContainer(containerID)
 		if err != nil {
