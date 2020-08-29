@@ -124,7 +124,7 @@ spec:
           limits:
             memory: $DNS_MEMORY_LIMIT
           requests:
-            cpu: 100m
+            cpu: 0 
             memory: 70Mi
         args: [ "-conf", "/etc/coredns/Corefile" ]
         volumeMounts:
