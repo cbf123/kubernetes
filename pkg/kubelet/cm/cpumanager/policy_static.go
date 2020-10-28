@@ -26,9 +26,9 @@ import (
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpumanager/state"
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpumanager/topology"
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpuset"
+	"k8s.io/kubernetes/pkg/kubelet/cm/devicemanager"
 	"k8s.io/kubernetes/pkg/kubelet/cm/topologymanager"
 	"k8s.io/kubernetes/pkg/kubelet/cm/topologymanager/bitmask"
-	"k8s.io/kubernetes/pkg/kubelet/cm/devicemanager"
 )
 
 // PolicyStatic is the name of the static policy
@@ -223,6 +223,45 @@ func (p *staticPolicy) assignableCPUs(s state.State) cpuset.CPUSet {
 	return s.GetDefaultCPUSet().Difference(p.reserved)
 }
 
+// Adjust the affinity to handle any isolated CPUs
+func (p *staticPolicy) AffineIsol(s state.State, pod *v1.Pod, container *v1.Container) error {
+	if isolcpus := p.podIsolCPUs(pod, container); isolcpus.Size() > 0 {
+		// container has requested isolated CPUs
+		set, ok := s.GetCPUSet(string(pod.UID), container.Name)
+		if ok {
+			if isolcpus.IsSubsetOf(set) {
+				klog.Infof("[cpumanager] isolcpus already present in state, skipping " +
+							"(namespace: %s, pod UID: %s, pod: %s, container: %s)",
+							pod.Namespace, string(pod.UID), pod.Name, container.Name)
+				return nil
+			}
+
+			klog.Infof("[cpumanager] container state has cpus %v, should contain isolcpus %v" +
+						"(namespace: %s, pod UID: %s, pod: %s, container: %s)",
+						set, isolcpus, pod.Namespace, string(pod.UID), pod.Name, container.Name)
+		} else {
+			// If "ok" isn't true then this is a new container.
+			// I'm not sure if this is strictly necessary.  We might be able to rely
+			// on the default value of set if it wasn't in the saved state, then test
+			// against the empty set down below.
+			klog.Infof("[cpumanager] AffineIsol ok is false, set: %s, set.IsEmpty: %s", set, set.IsEmpty())
+			set = s.GetDefaultCPUSet()
+		}
+
+		// Note that we do not do anything about init containers here.
+		// It looks like devices are allocated per-pod based on effective requests/limits
+		// and extra devices from initContainers are not freed up when the regular containers start.
+		// TODO: confirm this is still true for 1.18
+		set = set.Union(isolcpus)
+		s.SetCPUSet(string(pod.UID), container.Name, set)
+
+		klog.Infof("[cpumanager] isolcpus: AddContainer " +
+					"(namespace: %s, pod UID: %s, pod: %s, container: %s); cpuset=%v",
+					pod.Namespace, string(pod.UID), pod.Name, container.Name, set)
+	}
+	return nil
+}
+
 func (p *staticPolicy) Allocate(s state.State, pod *v1.Pod, container *v1.Container) error {
 	// Process infra pods before guaranteed pods
 	if isKubeInfra(pod) {
@@ -285,33 +324,15 @@ func (p *staticPolicy) Allocate(s state.State, pod *v1.Pod, container *v1.Contai
 		klog.Infof("[cpumanager] guaranteed: AddContainer " +
 					"(namespace: %s, pod UID: %s, pod: %s, container: %s); numCPUS=%d, cpuset=%v",
 					pod.Namespace, string(pod.UID), pod.Name, container.Name, numCPUs, cpuset)
+		
+		// Adjust the container affinity to include any allocated isolated CPUs.
+		p.AffineIsol(s, pod, container)
 		return nil
 	}
 
-	if isolcpus := p.podIsolCPUs(pod, container); isolcpus.Size() > 0 {
-		// container has requested isolated CPUs
-		if set, ok := s.GetCPUSet(string(pod.UID), container.Name); ok {
-			if set.Equals(isolcpus) {
-				klog.Infof("[cpumanager] isolcpus container already present in state, skipping " +
-							"(namespace: %s, pod UID: %s, pod: %s, container: %s)",
-							pod.Namespace, string(pod.UID), pod.Name, container.Name)
-				return nil
-			} else {
-				klog.Infof("[cpumanager] isolcpus container state has cpus %v, should be %v" +
-							"(namespace: %s, pod UID: %s, pod: %s, container: %s)",
-							isolcpus, set, pod.Namespace, string(pod.UID), pod.Name, container.Name)
-			}
-		}
-		// Note that we do not do anything about init containers here.
-		// It looks like devices are allocated per-pod based on effective requests/limits
-		// and extra devices from initContainers are not freed up when the regular containers start.
-		// TODO: confirm this is still true for 1.18
-		s.SetCPUSet(string(pod.UID), container.Name, isolcpus)
-		klog.Infof("[cpumanager] isolcpus: AddContainer " +
-					"(namespace: %s, pod UID: %s, pod: %s, container: %s); cpuset=%v",
-					pod.Namespace, string(pod.UID), pod.Name, container.Name, isolcpus)
-		return nil
-	}
+	// Set the container affinity to any allocated isolated CPUs.
+	// This will override the default cpuset so it's only affined to the isolated CPUs.
+	p.AffineIsol(s, pod, container)
 
 	// container belongs in the shared pool (nothing to do; use default cpuset)
 	return nil
